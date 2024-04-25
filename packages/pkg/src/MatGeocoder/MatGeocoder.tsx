@@ -1,5 +1,5 @@
 import React, {useState, useCallback, useEffect, useRef} from 'react';
-import search from './search';
+import search, {SearchApis, retrieveFeature} from './search';
 import Autosuggest from 'react-autosuggest';
 import match from 'autosuggest-highlight/match';
 import parse from 'autosuggest-highlight/parse';
@@ -33,9 +33,11 @@ type Props = {
   inputValue?: string;
 
   endpoint?: string;
+  searchApi: SearchApis;
   source?: string;
   inputPlaceholder?: string;
   accessToken: string;
+  sessionToken: string;
   proximity?: {longitude: number; latitude: number};
   country?: string;
   bbox?: number[];
@@ -116,6 +118,20 @@ const SearchTextField = ({...props}: Partial<TextFieldProps>) => {
   );
 };
 
+export const formatSuggestionLabel = (suggestion: any) => {
+  var res = ""
+  if (suggestion.name) {
+    res = suggestion.name
+    if (suggestion.full_address) {
+      res = res + ", "
+    }
+  }
+  if (suggestion.full_address) {
+    res = res + suggestion.full_address
+  }
+  return res
+}
+
 /**
  * Geocoder component: connects to Mapbox.com Geocoding API
  * and provides an auto-completing interface for finding locations.
@@ -124,6 +140,7 @@ const MatGeocoder = ({
   endpoint = 'https://api.mapbox.com',
   inputPlaceholder = 'Search',
   showLoader = true,
+  searchApi = SearchApis.geocoding,
   source = 'mapbox.places',
   // eslint-disable-next-line @typescript-eslint/no-empty-function
   onSuggest = () => {},
@@ -140,6 +157,7 @@ const MatGeocoder = ({
   suggestionsPaperProps,
   onSelect,
   accessToken,
+  sessionToken,
   onInputFocus,
   onInputBlur,
   inputClasses,
@@ -333,17 +351,34 @@ const MatGeocoder = ({
       // searchTime is compared with the last search to set the state
       // to ensure that a slow xhr response does not scramble the
       // sequence of autocomplete display.
-      if (!err && fc && fc.features && searchTime <= st) {
-        setSearchTime(st);
-        setResults(
-          fc.features
-            .map((feature: any) => ({
-              feature: feature,
-              label: feature.place_name,
-            }))
-            .filter((feature: any) => feature.label)
-        );
-        setLoading(false);
+      if (!err && fc && searchTime <= st) {
+        if (searchApi == SearchApis.geocoding) {
+          if (fc.features) {
+            setSearchTime(st);
+            setResults(
+              fc.features
+                .map((feature: any) => ({
+                  feature: feature,
+                  label: feature.place_name,
+                }))
+                .filter((feature: any) => feature.label)
+            );
+            setLoading(false);
+          }
+        } else if (searchApi == SearchApis.searchbox) {
+          if (fc.suggestions) {
+            setSearchTime(st);
+            setResults(
+              fc.suggestions
+                .map((suggestion: any) => ({
+                  feature: suggestion,
+                  label: formatSuggestionLabel(suggestion),   // https://docs.mapbox.com/api/search/search-box/#response-get-suggested-results
+                }))
+                .filter((suggestion: any) => suggestion.label)
+            );
+            setLoading(false);
+          }
+        }
       }
     },
     [searchTime]
@@ -360,8 +395,10 @@ const MatGeocoder = ({
       } else {
         search(
           endpoint,
+          searchApi,
           source,
           accessToken,
+          sessionToken,
           value,
           onResult,
           proximity,
@@ -381,12 +418,14 @@ const MatGeocoder = ({
       limit,
       language,
       autocomplete,
+      searchApi,
       source,
       proximity,
       prevValue,
       onResult,
       types,
       accessToken,
+      sessionToken,
     ]
   );
 
@@ -395,8 +434,19 @@ const MatGeocoder = ({
    * (event, {suggestion, suggestionValue, suggestionIndex, sectionIndex, method})
    */
   const handleSuggestionSelected = useCallback(
-    (_event, {suggestion}) => {
-      onSelect && onSelect(suggestion.feature);
+    async (_event, {suggestion}) => {
+      if (onSelect) {
+        if (searchApi == SearchApis.geocoding) {
+          onSelect(suggestion.feature);
+        } else if (searchApi == SearchApis.searchbox) {
+          const retrieveRes = await retrieveFeature(suggestion.feature.mapbox_id, endpoint, accessToken, sessionToken)
+          if (retrieveRes.err) {
+            console.error(`MatGeocoder.handleSuggestionSelected(): retrieveFeature(${suggestion}) errored:`, retrieveRes.err)
+          } else if (retrieveRes.feature) {
+            onSelect(retrieveRes.feature);
+          }
+        }
+      }
       // focus on the input after click to maintain key traversal
       // this.inputRef.current && this.inputRef.current.focus()
       return false;
